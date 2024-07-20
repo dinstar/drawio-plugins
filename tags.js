@@ -13,13 +13,13 @@
  */
 Draw.loadPlugin(function(editorUi)
 {
-	var div = document.createElement('div');
-	
-	// Adds resource for action
-	mxResources.parse('hiddenTags=Hidden Tags');
+	var
+		div = document.createElement('div'),
+    menu = editorUi.menus.get('extras'),
+    oldFunct = menu.funct;
 
 	// Adds action
-	editorUi.actions.addAction('hiddenTags...', function()
+	function addAction()
 	{
 		if (editorUi.hiddenTagsWindow == null)
 		{
@@ -39,22 +39,24 @@ Draw.loadPlugin(function(editorUi)
 		{
 			editorUi.hiddenTagsWindow.window.setVisible(!editorUi.hiddenTagsWindow.window.isVisible());
 		}
-	});
-	
-	var menu = editorUi.menus.get('extras');
-	var oldFunct = menu.funct;
-	
-	menu.funct = function(menu, parent)
+	}
+
+  menu.funct = function(menu, parent)
 	{
 		oldFunct.apply(this, arguments);
 		
 		editorUi.menus.addMenuItems(menu, ['-', 'hiddenTags'], parent);
 	};
 
-	var HiddenTagsWindow = function(editorUi, x, y, w, h)
+  // Adds resource for action
+	mxResources.parse('hiddenTags=Hidden Tags');
+
+  editorUi.actions.addAction('hiddenTags...', addAction);
+
+	function HiddenTagsWindow(editorUi, x, y, w, h)
 	{
 		var graph = editorUi.editor.graph;
-
+	
 		var div = document.createElement('div');
 		div.style.overflow = 'hidden';
 		div.style.padding = '12px 8px 12px 8px';
@@ -70,20 +72,57 @@ Draw.loadPlugin(function(editorUi)
 		searchInput.style.padding = '4px';
 		searchInput.style.marginBottom = '8px';
 		div.appendChild(searchInput);
-
+	
 		var filterInput = searchInput.cloneNode(true);
 		filterInput.setAttribute('placeholder', 'Filter tags');
 		div.appendChild(filterInput);
-
+	
 		var tagCloud = document.createElement('div');
 		tagCloud.style.position = 'relative';
 		tagCloud.style.fontSize = '12px';
 		tagCloud.style.height = 'auto';
 		div.appendChild(tagCloud);
-
+	
 		var graph = editorUi.editor.graph;
 		var lastValue = null;
-		
+
+		// Function to set custom document properties
+		function savePluginState(name, properties)
+		{
+			var model = graph.model;
+			try {
+					var
+						root = model.getRoot(),
+						docProperties = JSON.parse(root.value || '{}');
+					docProperties[name] = properties;
+					root.value = JSON.stringify(docProperties);
+				}
+				catch (e)
+				{
+					console.error('Error saving plugin state:', e, name, properties);
+				}
+		}
+
+		// Function to get custom document properties
+		function loadPluginState(name, defaultValue)
+		{
+			try
+			{
+				var
+					root = graph.model.getRoot();
+					if (root.value == null)
+						return defaultValue;
+				var
+					docProperties = JSON.parse(root.value || '{}');
+				return docProperties[name] || {};
+			}
+			catch (e)
+			{
+				console.error('Error loading plugin state:', e);
+			}
+			return {};
+		}
+
 		function getLookup(tagList)
 		{
 			var lookup = {};
@@ -101,48 +140,44 @@ Draw.loadPlugin(function(editorUi)
 			return graph.getTagsForCells(graph.model.getDescendants(
 				graph.model.getRoot()));
 		};
-
+	
 		/**
 		 * Returns true if tags exist and are all in lookup.
 		 */
-		function matchTags(tags, lookup, tagCount)
+		function showBasedOnTags(cell, visibleLookup, tagCount)
 		{
-			if (tags.length > 0)
+			var
+				tags = graph.getTagsForCell(cell).toLowerCase().split(' ').filter(v => v.length > 0),
+				res = getResult();
+
+			console.info('showBasedOnTags', res, tags, visibleLookup, tagCount, cell);
+
+			function getResult()
 			{
-				var tmp = tags.toLowerCase().split(' ');
-				
-				if (tmp.length > tagCount)
-				{
-					return false;
-				}
-				else
-				{
-					for (var i = 0; i < tmp.length; i++)
-					{
-						if (lookup[tmp[i]] == null)
-						{
-							return false;
-						}
-					}
-					
+				if (hiddenTagCount == 0)
 					return true;
-				}
-			}
-			else
-			{
+				if (tags.length == 0)
+					return true;
+				
+				for (var i = 0; i < tags.length; i++)
+					if (visibleLookup[tags[i]])
+						return true;
+				
 				return false;
 			}
-		};
+
+			return res;
+		}
 		
 		var hiddenTags = {};
 		var hiddenTagCount = 0;
 		var graphIsCellVisible = graph.isCellVisible;
-
+	
 		graph.isCellVisible = function(cell)
 		{
+			console.info('isCellVisible', cell.id);
 			return graphIsCellVisible.apply(this, arguments) &&
-				(hiddenTagCount == 0 ||
-				!matchTags(graph.getTagsForCell(cell), hiddenTags, hiddenTagCount));
+				showBasedOnTags(cell, hiddenTags, hiddenTagCount);
 		};
 		
 		function setCellsVisibleForTag(tag, visible)
@@ -162,7 +197,7 @@ Draw.loadPlugin(function(editorUi)
 			
 			graph.setCellsVisible(cells, visible);
 		};
-
+	
 		function updateSelectedTags(tags, selected, selectedColor, filter)
 		{
 			tagCloud.innerText = '';
@@ -173,6 +208,16 @@ Draw.loadPlugin(function(editorUi)
 			tagCloud.appendChild(title);
 			
 			var found = 0;
+
+			function checkSelected(selectedKey)
+			{
+				if ( ! tags.includes(selectedKey))
+					delete selected[selectedKey];
+			}
+
+			savePluginState('hiddenTags', selected);
+
+			Object.keys(selected).forEach(checkSelected);
 			
 			for (var i = 0; i < tags.length; i++)
 			{
@@ -201,66 +246,75 @@ Draw.loadPlugin(function(editorUi)
 						span.style.background = (Editor.isDarkMode()) ? 'transparent' : '#ffffff';
 					}
 					
-					mxEvent.addListener(span, 'click', (function(tag)
-					{
-						return function()
-						{
-							if (!selected[tag])
-							{
-								if (!graph.isSelectionEmpty())
-								{
-									graph.addTagsForCells(graph.getSelectionCells(), [tag])
-								}
-								else
-								{
-									hiddenTags[tag] = true;
-									hiddenTagCount++;
-									refreshUi();
-									
-									window.setTimeout(function()
-									{
-										graph.refresh();
-									}, 0);
-								}
-							}
-							else
-							{
-								if (!graph.isSelectionEmpty())
-								{
-									graph.removeTagsForCells(graph.getSelectionCells(), [tag])
-								}
-								else
-								{
-									delete hiddenTags[tag];
-									hiddenTagCount--;
-									refreshUi();
-									
-									window.setTimeout(function()
-									{
-										graph.refresh();
-									}, 0);
-								}
-							}
-						};
-					})(tags[i]));
+					mxEvent.addListener(span, 'click', onTagClick(selected, tags[i]));
 					
 					tagCloud.appendChild(span);
 					mxUtils.write(tagCloud, ' ');
 					found++;
 				}
 			}
-
+	
 			if (found == 0)
 			{
 				mxUtils.write(tagCloud, 'No tags found');
 			}
 		};
+
+		function onTagClick(selected, tag)
+		{
+			return function()
+			{
+				console.info('onTagClick', tag);
+				if (!selected[tag])
+				{
+					if (!graph.isSelectionEmpty())
+					{
+						graph.addTagsForCells(graph.getSelectionCells(), [tag])
+					}
+					else
+					{
+						hiddenTags[tag] = true;
+						hiddenTagCount++;
+						refreshUi();
+						
+						window.setTimeout(function()
+						{
+							graph.refresh();
+						}, 0);
+					}
+				}
+				else
+				{
+					if (!graph.isSelectionEmpty())
+					{
+						graph.removeTagsForCells(graph.getSelectionCells(), [tag])
+					}
+					else
+					{
+						delete hiddenTags[tag];
+						hiddenTagCount--;
+						refreshUi();
+						
+						window.setTimeout(function()
+						{
+							graph.refresh();
+						}, 0);
+					}
+				}
+			};
+		}
 		
 		function updateTagCloud(tags)
 		{
 			updateSelectedTags(tags, hiddenTags, '#bb0000', filterInput.value);
 		};
 		
+		function loadDocState()
+		{
+			hiddenTags = loadPluginState('hiddenTags', hiddenTags);
+			hiddenTagCount = Object.keys(hiddenTags).length;
+		}
+
 		function refreshUi()
 		{
 			if (graph.isSelectionEmpty())
@@ -277,18 +331,20 @@ Draw.loadPlugin(function(editorUi)
 			}
 		}
 		
+		loadDocState();
 		refreshUi();
-
+	
 		graph.selectionModel.addListener(mxEvent.CHANGE, function(sender, evt)
 		{
 			refreshUi();
 		});
-		
+
 		graph.model.addListener(mxEvent.CHANGE, function(sender, evt)
 		{
+			loadDocState();
 			refreshUi();
 		});
-
+	
 		mxEvent.addListener(filterInput, 'keyup', function()
 		{
 			updateTagCloud(getAllTags());
@@ -303,7 +359,7 @@ Draw.loadPlugin(function(editorUi)
 				searchInput.value = '';
 			}
 		});
-
+	
 		this.window = new mxWindow(mxResources.get('hiddenTags'), div, x, y, w, null, true, true);
 		this.window.destroyOnClose = false;
 		this.window.setMaximizable(false);
@@ -318,6 +374,8 @@ Draw.loadPlugin(function(editorUi)
 			
 			if (this.window.isVisible())
 			{
+				loadDocState();
+
 				searchInput.focus();
 				
 				if (mxClient.IS_GC || mxClient.IS_FF || document.documentMode >= 5)
@@ -342,7 +400,7 @@ Draw.loadPlugin(function(editorUi)
 			
 			x = Math.max(0, Math.min(x, iw - this.table.clientWidth));
 			y = Math.max(0, Math.min(y, ih - this.table.clientHeight - 48));
-
+	
 			if (this.getX() != x || this.getY() != y)
 			{
 				mxWindow.prototype.setLocation.apply(this, arguments);
@@ -358,12 +416,11 @@ Draw.loadPlugin(function(editorUi)
 		});
 		
 		mxEvent.addListener(window, 'resize', resizeListener);
-
+	
 		this.destroy = function()
 		{
 			mxEvent.removeListener(window, 'resize', resizeListener);
 			this.window.destroy();
 		}
-	};
-
+	};	
 });
